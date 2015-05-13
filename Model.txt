@@ -1,0 +1,231 @@
+Allen Sirolly
+PSCI 418-401 / Prof I Lustick
+Final Project
+due: May 4, 2015
+
+Model.nlogo
+
+;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
+
+to set-default-globals
+  ;; Attack model
+  ;; a. locations: follow a Gaussian random walk with std dev sigma
+  set attack-x 0.0
+  set attack-y 0.0
+  set sigma 1.0
+  
+  ;; b. magnitudes: follow a power law with these params
+  set xmin 1.0
+  set alpha 2.5
+  
+  ;; decay coefficient in risk model
+  set gamma 0.8
+  
+  ;; track total number of refugees & displaced persons (IDPs)
+  set refugees 0
+  set IDPs 0
+end
+
+globals [
+  attack-x  ;; x coordinate of attack at time t
+  attack-y  ;; y coordinate of attack at time t
+  sigma  ;; standard deviation of RW steps
+  
+  attack-magnitude  ;; magnitude of attack at time t
+  xmin ;; smallest magnitude (xmin > 0 necessary for well-defined power law dist)
+  alpha  ;; power law exponent (magnitudes: larger alpha --> fewer 'extreme' events)
+  
+  gamma   ;; decay factor on hh risk (between 0 and 1)
+  
+  refugees  ;; total number of refugees at time t
+  IDPs      ;; total number of displaced persons (excluding refugees) at time t
+
+]
+
+breed [hhs hh] ;; Agents are households
+
+hhs-own [
+  members  ;; n-bit vector / list of 1's and 0's; 1's are non-IDPs, 0's IDPs
+  risk     ;; perceived risk at time t
+  cap ;; maximum capacity ( >= members)
+  tolerance  ;; level of risk at which hh will become displaced
+  betas ;; coefficients for ranking links
+]
+
+;; directed links
+links-own [
+  cost    ;; household's cost of relocating to linked target (determines preferences)
+]
+
+
+;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
+;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
+
+
+to setup
+  clear-all
+  resize-world 0 30 0 30
+  set-default-shape hhs "square"
+  set-default-globals
+  
+  ask patches [ sprout-hhs 1 [ set color 35 ] ]
+  ask hhs [
+    set risk 0.0
+    set members n-values (2 + random 5) [1] ;; 2-6 members (list of 1's (non-IDPs))
+    set cap length members + random (length members) ;; up to double cap
+    set betas n-values 3 [0.4 + random-float 0.2]
+    set tolerance 10
+    
+    ;; if "Capacity" selected: colors correspond to how close household is to cap (darker = more full)
+    ;; if "Risk Level" selected: correspond to how close hh risk is to tolerance (darker = more risk)
+    color-cell    
+  ]
+  
+  ;; initialize links
+  ;; note: delta parameterizes the 'locality' of the network
+  ;; N parameterizes the size, i.e., number of links (same for all hhs)
+  ask hhs [
+    create-links-to n-of N other hhs with [distance self <= delta]
+  ]
+  
+  reset-ticks
+
+end
+
+
+to update-hhs
+  
+  ;;;;;;;;;;;;;;; Update risk
+  
+  ask hhs with [risk < tolerance] [
+    set Risk gamma * Risk + attack-magnitude / distancexy attack-x attack-y
+    color-cell
+    ;; hhs with risk >= tolerance become uninhabitable (cap --> 0, members displaced (below), risk stays high)
+    if risk >= tolerance [
+      set cap 0
+      set color black
+    ]
+  ]
+  
+  
+  ;;;;;;;;;;;;;; Update link weights (costs), used to form preferences
+  
+  ask hhs with [risk >= tolerance] [
+    let my-members members
+    
+    ;; for mean-centering and scaling below
+    let a0_mean mean [[risk] of other-end] of my-out-links
+    let a0_range range [[risk] of other-end] of my-out-links
+    let a1_mean mean [link-length] of my-out-links
+    let a1_range range [link-length] of my-out-links
+    
+    let b0 item 0 betas
+    let b1 item 1 betas
+    let b2 item 2 betas
+    
+    ask my-out-links [
+      let a0 [risk] of other-end
+      let a1 link-length
+      let a2 [cap - length members < length my-members] of other-end  ;; indicator: requires family split?
+      ;; change true/false to 1/0
+      ifelse a2 [set a2 1] [set a2 0]
+      
+      ;; compute cost of relocation
+      ;; mean-center and scale vars
+      set cost b0 * ((a0 - a0_mean) / a0_range) + b1 * ((a1 - a1_mean) / a1_range) + b2 * a2
+    
+    ]
+  ]
+  
+  
+  ;;;;;;;;;;;;;;;; Relocate based on preferences
+  
+  ask hhs with [risk >= tolerance] [
+    
+    ;; list of linked households, ordered from most to least preferred
+    let S map [target self ?] (sort-on [cost] my-out-links)
+    
+    foreach S [
+      ;; note: since this not an 'ask' statement, attributes reference those of hh, not those of each element of S
+      let target-cap [cap] of ?
+      let target-members [members] of ?
+      
+      ;; if target has excess capacity...
+      if (target-cap - length target-members > 0) [
+        let m min list (length members) (target-cap - length target-members)
+        let movers sublist members 0 m  ;; first m members
+        
+        set members sublist members m length members
+        set target-members sentence (target-members) (n-values m [0])  ;; add m 0's (IDPs) to target-members
+        set IDPs IDPs + sum movers   ;; increment by number of 1's (non-IDPs) in movers
+        
+        color-cell
+      ]
+      ;; if my-members <= 0 [ stop ] ;; (throws error for some reason)
+    ]
+    
+    ;; remaining members (not able to relocate to a linked hh) become refugees
+    set refugees refugees + length members
+    set members []
+    
+    ;; update colors
+    set color black
+  ]
+  
+end
+
+
+;; auxiliary function used above
+to-report range [a-list]
+  ;; add 0.01 to prevent div by zero
+  ifelse length a-list > 1
+    [ report (max a-list - min a-list) + 0.01]
+    [ report item 0 a-list + 0.01 ]
+end
+
+
+;; auxiliary function used above
+to-report target [node edge]
+  let x 0
+  ask node [
+    ask edge[
+      set x other-end
+    ]
+  ]
+  report x
+end
+
+
+;; maximum allowable delta (dist within which hhs can form links)
+;; assumes wrapped topology
+to-report max-delta
+  report floor (sqrt(world-width ^ 2 + world-height ^ 2) / 2)
+end
+
+
+to color-cell
+  if ColorScheme = "Capacity" [
+    ifelse cap > 0
+      [set color 38 - (length members / cap)*(38 - 34)]
+      [set color black]
+  ]
+  if ColorScheme = "Risk Level" [
+    set color max list 10 (19 - (risk / tolerance)*(19 - 10))
+  ]
+end
+
+
+to go
+  update-globals ;; update attack process
+  update-hhs ;; update households
+  tick
+end
+
+
+to update-globals
+  set attack-x attack-x + sigma * random-normal 0 1
+  set attack-y attack-y + sigma * random-normal 0 1
+  ;; sample from power law dist
+  ;; set max percentile (cut out outrageously large attacks)
+  set attack-magnitude xmin * (1 - random-float 0.98)^(1 /(1 - alpha))
+end
